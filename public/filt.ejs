@@ -1,0 +1,525 @@
+<html>
+	<head>
+		<title>Auground Filter View</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<script src="/libs/three.js"></script>
+ 		<script module src="/libs/webxr.js"></script>
+		 <script src="/libs/Cesium.js"></script>
+ 		<script src="/libs/webxr-geospatial.js"></script>
+		<link rel="stylesheet" href="/common.css"/>
+		<script src="/libs/three-web-layer.umd.js"></script>
+		<!--<script src='threex.dynamictexture.js'></script>-->
+		<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js" type="text/javascript"></script>
+
+		<div id="filterContentHid"></div>
+
+		<script>
+			<% if(locals.filterContent != null)  { %>
+				document.getElementById("filterContentHid").value = <%-JSON.stringify(filterContent)%>;
+			<% } %>
+		</script>
+	</head>
+	<body>
+		<div id="description">
+			<img href="https://holeinthedonut.com/wp-content/uploads/2014/09/Ireland-Dublin-OConnell-Street.jpg">
+			<h2><%=filterDetails[0].title%></h2>
+			<h4><%=filterDetails[0].description%></h4>
+		</div>
+		<form action="/filter" method="post" enctype="multipart/form-data" id="filterForm">
+			<input type="submit" id="activateButton" name="activateButton" value="Activate Filter">
+		</form>
+		<script type=module>
+			console.log(document.getElementById("filterContentHid").value);
+			var filterContentValues = document.getElementById("filterContentHid").value;
+			for(var i = 0; i < filterContentValues.length; i++) {				
+				console.log(filterContentValues[i].contentID);
+				console.log(filterContentValues[i].rotation);
+				console.log(filterContentValues[i].contentType);
+				console.log(filterContentValues[i].contentValue);
+			}	
+
+
+			// some dependencies and utilities
+			import * as mat4 from '/libs/gl-matrix/mat4.js'
+			import * as vec3 from '/libs/gl-matrix/vec3.js'
+
+			import XREngine from "/XREngine.js"
+			import XRInputManager from "/XRInputManager.js"
+
+			let device = null
+			let session = null
+			let eyeLevelFrameOfReference = null
+			let engine = null
+			
+			// temporary working variables
+			const workingMatrix = mat4.create()
+			const workingVec3 = vec3.create()
+
+			let textBox = document.createElement('span')
+			textBox.setAttribute('id', 'text-box')
+			textBox.setAttribute('class', 'text-box')
+			textBox.style.visibility = 'hidden'
+			textBox.style.display = 'none'
+
+			// textBox.myText = '<p>Waiting to start ...</p>'
+			// textBox.innerHTML = textBox.myText
+
+			document.body.appendChild(textBox)
+
+			var raycaster = new THREE.Raycaster();
+			var mouse = null
+			var boxes = []
+
+			////////////
+			var myGeoNode = null;
+			var myGeoAnchor = null
+
+			var myGeoLoc = null
+
+			// for moving DIVs to 3D
+			function beforeRasterize(webLayer) {
+				webLayer.element.style.visibility = "visible"
+			}
+			function afterRasterize(webLayer) {
+				webLayer.element.style.visibility = "hidden"
+			}
+			let layerOptions = {
+				onBeforeRasterize: beforeRasterize,
+				onAfterRasterize: afterRasterize
+			}
+
+			var descLayer = new WebLayer3D(document.getElementById('description'), layerOptions)
+			var textLayer = new WebLayer3D(textBox, layerOptions)
+
+			var clock = new THREE.Clock()
+			var hudNode = new THREE.Group()
+			hudNode.add(descLayer)
+			hudNode.add(textLayer)
+
+			hudNode.visible = false
+			const HUD_Z = 0.2  // 2cm in front of display
+
+			updateLoop()
+
+			function sleep (time) {
+		        return new Promise((resolve) => setTimeout(resolve, time));
+    		}
+
+			XRGeospatialAnchor.useEstimatedElevation(true, 1.3)
+
+			// let posClone = "test";
+			// var posCalculations = { "N": (posClone)};
+			// console.log(posCalculations["N"]);
+
+			async function updateLoop () {
+				let deviceCarto = await XRGeospatialAnchor.getDeviceCartographic()
+
+				await XRGeospatialAnchor.useEstimatedElevation(true, 1.3)
+
+				await sleep(1000)
+				setTimeout(() => updateLoop(), 1)
+			}
+
+			function updateScene() {
+				const deltaTime = clock.getDelta()
+    			//const elapsedTime = clock.getElapsedTime()
+	
+				descLayer.shouldUseTargetLayout = 'always'
+				textLayer.shouldUseTargetLayout = 'always'
+
+			    descLayer.update(1) //deltaTime*10)
+				textLayer.update(1) //deltaTime*10)
+				
+				if (mouse) {
+					// update the picking ray with the camera and mouse position
+					raycaster.setFromCamera( mouse, engine.camera );
+					mouse = null
+
+					if (descLayer.visible && descLayer.hitTest(raycaster.ray)) {
+						descLayer.visible = false
+					} else {
+						// calculate objects intersecting the picking ray
+						var intersects = raycaster.intersectObjects( boxes );
+						let intersection = intersects.length ? intersects[0] : null
+						if (intersection) {
+							console.log("hit box: " + intersection.object.geoName)
+							textBox.myText = 'At ' +  intersection.object.geoName + " box"
+							moveGeoOrigin(intersection)
+						} else {
+							console.log("miss, going back to device geolocation")
+							clearGeoOrigin()
+						}
+					}
+				}
+			}
+
+			function updateForView() {
+				let natural = WebLayer3D.computeNaturalDistance(engine.camera, engine.renderer)
+				let scale = (HUD_Z / natural)
+
+				//hudNode.scale.set(scale*window.devicePixelRatio, scale*window.devicePixelRatio, 1)
+				hudNode.scale.set(scale, scale, 1)
+			}
+				
+			async function moveGeoOrigin(intersection) {
+				if (intersection && intersection.object.parent && intersection.object.parent.anchor) {
+					let cartesian = intersection.object.parent.anchor.cartesian
+
+					let headFrameOfReference = await session.requestFrameOfReference('head-model')
+					eyeLevelFrameOfReference = await session.requestFrameOfReference('eye-level')
+
+					headFrameOfReference.getTransformTo(eyeLevelFrameOfReference, workingMatrix)
+					let anchor = await session.addAnchor(workingMatrix, eyeLevelFrameOfReference)
+
+					if (myGeoAnchor) {
+						await session.removeAnchor(myGeoAnchor)
+					}
+					if (myGeoNode) {
+						myGeoNode.parent.visible = true
+					}
+
+					myGeoNode = intersection.object
+					myGeoNode.parent.visible = false
+					myGeoAnchor = anchor
+
+					XRGeospatialAnchor.overrideGeoLocation(cartesian, anchor)
+					return true
+				}
+			}
+
+			async function clearGeoOrigin()  {
+				if (myGeoAnchor) {
+					await session.removeAnchor(myGeoAnchor)
+				}
+				if (myGeoNode) {
+					myGeoNode.parent.visible = true
+				}
+				myGeoAnchor = null
+				myGeoNode = null
+
+				XRGeospatialAnchor.useDeviceGeolocation()
+			}
+
+			// samples received from the location API at this location, at one point
+			let testCartographic = Cesium.Cartographic.fromDegrees(-84.34824477127631, 33.78545836417129, 275.12518310546875)
+			let testAltitude = 275.12518310546875
+
+			// some other pints you could play with.
+			//
+			// let streetCorner = Cesium.Cartographic.fromDegrees(-84.348134, 33.785437, 0)
+			// let upHillEast = Cesium.Cartographic.fromDegrees(-84.347461, 33.785337, 0)
+			// let yardNortWest = Cesium.Cartographic.fromDegrees(-84.34824477127631, 33.78545836417129, 0)
+			// let intersectionSouth = Cesium.Cartographic.fromDegrees(-84.348160, 33.783789, 0)
+
+			const DIST = 0.001 * THREE.Math.DEG2RAD
+			function initializeScene() {
+				engine.camera.add(hudNode)
+				hudNode.position.set(0,0,-HUD_Z)
+
+				// go to where you should go ...
+			    descLayer.update(1)
+			    textLayer.update(1)
+	  
+				engine.addAmbientLight(0xffffff, 0.8)
+
+				// Add a box at the origin of our starting coordinate system
+				// engine.addBox([0, -0.25, 0], [0.025, 0.025, 0.025], 0x44ff44)
+				// engine.addAxesHelper([0,-0.25,0], [0.2,0.2,0.2])		
+				
+				// some tests
+				XRGeospatialAnchor.getDeviceCartographic().then(cartographic => {
+					myGeoLoc = cartographic
+					console.log("device cartographic: ", myGeoLoc)
+
+					<% if(locals.filterContent) { %>
+						<% for(var i = 0; i < filterContent.length; i++) { %>
+							console.log("contentID " + <%-JSON.stringify(filterContent[i].contentID) %>)
+							console.log("filterID " + <%-JSON.stringify(filterContent[i].filterID) %>)
+							console.log("contentType " + <%-JSON.stringify(filterContent[i].contentType) %>)
+							console.log("contentValue " + <%-JSON.stringify(filterContent[i].contentValue) %>)
+							console.log("rotation " + <%-JSON.stringify(filterContent[i].rotation) %>)				
+
+							//let "point"+i = generateCoordinates(vRotation, Cesium.Cartographic.clone(cartographic))				
+							XRGeospatialAnchor.createGeoAnchor(generateCoordinates(<%-JSON.stringify(filterContent[i].rotation) %>, Cesium.Cartographic.clone(cartographic))).then(anchor => {engine.addAnchoredNode(anchor, createSceneGraphNode(<%-JSON.stringify(filterContent[i].rotation) %>, <%-JSON.stringify(filterContent[i].contentType) %>, <%-JSON.stringify(filterContent[i].contentValue) %>))
+							})
+						<% } %>
+					<% } %>
+				})
+
+				XRGeospatialAnchor.getDeviceElevation().then(altitude => {
+					console.log("device elevation: ", altitude)
+				})
+
+				XRGeospatialAnchor.getDefaultElevation(testCartographic).then(altitude => {
+					console.log("recorded work elevation in past: ", testAltitude)
+					console.log("estimated world elevation: ", altitude)
+				})
+			}
+
+			function generateCoordinates(direction, posClone) {
+				var posCalculations = { "N": ["posClone.latitude += DIST"],
+										"NNE": ["posClone.latitude += DIST", "posClone.latitude += DIST", "posClone.longitude += DIST"],
+										"NE": ["posClone.latitude += DIST", "posClone.longitude += DIST"],
+										"NEE": ["posClone.latitude += DIST", "posClone.longitude += DIST", "posClone.longitude += DIST"],
+										"E": ["posClone.longitude += DIST"],
+										"SEE": ["posClone.latitude -= DIST", "posClone.longitude += DIST", "posClone.longitude += DIST"],
+										"SE": ["posClone.latitude -= DIST", "posClone.longitude += DIST"],
+										"SSE": ["posClone.latitude -= DIST", "posClone.latitude -= DIST", "posClone.longitude += DIST"],
+										"S": ["posClone.latitude -= DIST"],
+										"SSW": ["posClone.longitude -= DIST", "posClone.latitude -= DIST", "posClone.latitude -= DIST"],
+										"SW": ["posClone.longitude -= DIST", "posClone.latitude -= DIST"],
+										"SWW": ["posClone.latitude -= DIST", "posClone.longitude -= DIST", "posClone.longitude -= DIST"],
+										"W": ["posClone.longitude -= DIST"],
+										"NWW": ["posClone.latitude += DIST", "posClone.longitude -= DIST", "posClone.longitude -= DIST"],
+										"NW": ["posClone.latitude += DIST", "posClone.longitude -= DIST"],
+										"NNW": ["posClone.latitude += DIST", "posClone.latitude += DIST", "posClone.longitude -= DIST"]};
+				
+				for(var key in posCalculations) {
+					if (key == direction) {
+						for(var i = 0; i < posCalculations[key].length; i++) {
+							eval(posCalculations[key][i]);
+						}
+						return posClone;
+					}
+				}
+			}
+
+			function getPointRotation(point) {
+				var pointRotations = { "S": (Math.PI),
+										"SSW": ((5 * Math.PI) / 6),
+										"SW": ((3 * Math.PI) / 4),
+										"SWW": ((2 * Math.PI) / 3),
+										"W": (Math.PI / 2),
+										"NWW": (Math.PI / 3),
+										"NW": (Math.PI / 4),
+										"NNW": (Math.PI / 6),
+										"N": (2 * Math.PI),
+										"NNE": ((11 * Math.PI) / 6),
+										"NE": ((7 * Math.PI) / 4),
+										"NEE": ((5 * Math.PI) / 3),
+										"E": ((3 * Math.PI) / 2),
+										"SEE": ((4 * Math.PI) / 3),
+										"SE": ((5 * Math.PI) / 4),
+										"SSE": ((7 * Math.PI) / 6)};
+
+				return pointRotations[point];
+			}
+
+			// Creates a box used to indicate the location of an anchor offset
+			function createSceneGraphNode(pointDirection, type, directionContent){
+				let group = new THREE.Group()
+	
+				if (type === "text") {
+					var loader = new THREE.FontLoader();
+
+					loader.load( 'fonts/helvetiker_regular.typeface.json', function ( font ) {
+
+					  var material = new THREE.MeshBasicMaterial( { color: 0xffffff} );
+
+					  var geometry = new THREE.TextBufferGeometry( directionContent, {
+					    font: font,
+					    size: 4,
+					    height: 0,
+					    curveSegments: 0,
+					    bevelEnabled: false,
+					    bevelThickness: 0,
+					    bevelSize: 1,
+					    bevelSegments: 1
+					  } );
+
+					  var mesh = new THREE.Mesh( geometry, material );
+					  mesh.position.set(0, 0.05, 0);
+					  mesh.rotateY(getPointRotation(pointDirection));
+
+					  group.add(mesh)
+
+					  // var backMaterial = new THREE.MeshBasicMaterial( { color: 0x000000} );
+
+					  // var backGeometry = new THREE.TextBufferGeometry( directionContent, {
+					  //   font: font,
+					  //   size: 5,
+					  //   height: 0,
+					  //   curveSegments: 0,
+					  //   bevelEnabled: false,
+					  //   bevelThickness: 0,
+					  //   bevelSize: 1,
+					  //   bevelSegments: 1
+					  // } );
+
+					  // var backMesh = new THREE.Mesh( backGeometry, backMaterial );
+					  // backMesh.position.set(0, 0.05, 0);
+					  // backMesh.rotateY(getPointRotation(pointDirection));
+
+					  // group.add(backMesh)
+					});
+				} else {
+
+				}
+				return group;
+			}
+
+			////////////////////////////////////////////////////
+			////////////////////////////////////////////////////
+			// BOILER PLATE.  Can you feel the plates boiling?
+			//
+			// Create the output context where the XRSession will place composited renders
+			const xrCanvas = document.createElement('canvas')
+			xrCanvas.setAttribute('class', 'xr-canvas')
+			const xrContext = xrCanvas.getContext('xrpresent')
+			if(!xrContext){
+				console.error('No XR context', xrCanvas)
+			}
+
+			// get the XR Device
+			navigator.xr.requestDevice().then(xrDevice => {
+				device = xrDevice
+			}).catch(err => {
+				console.error('Error', err)
+			})
+
+			document.getElementById('description').addEventListener('touchstart', hideMe, {capture: true})
+			function hideMe(event) { 
+				event.target.style.display = 'none' 
+				event.stopPropagation()
+			}
+
+			document.getElementById('activateButton').addEventListener('click', handleStartSessionRequest, true)
+			document.getElementById('activateButton').addEventListener('touchstart', handleGoButtonTouch, true)
+
+			if (filterContentValues != null) {
+				document.getElementById('activateButton').addEventListener("click", function(event){
+				  event.preventDefault()
+				});
+			}
+
+			function handleGoButtonTouch(event) { 
+				event.stopPropagation()
+			}
+
+			// handle input events from the XRInputManager
+			const inputManager = new XRInputManager(handleXRInput)
+			function handleXRInput(eventName, details){
+				switch(eventName){
+					case 'normalized-touch':
+						mouse =  new THREE.Vector2(...details.normalizedCoordinates)
+						break
+					default:
+						console.error('unknown xr input event', eventName, details)
+						break
+				}
+			}
+
+
+			/////////////////////
+			// Session startup / shutdown
+			function handleStartSessionRequest(ev){
+				if(device === null){
+					console.error('No xr device')
+					return
+				}
+
+				if (!session) {
+					device.requestSession({ 
+						outputContext: xrContext,
+						alignEUS: true,
+						geolocation: true
+					}).then(handleSessionStarted).catch(err => {
+						console.error('Session setup error', err)
+					})
+
+					document.getElementById('description').style.visibility = 'hidden'
+					descLayer.visible = false;
+					document.getElementById('description').style.visible = false;
+
+					hudNode.visible = true
+
+					textBox.myText = 'At device location'
+					document.getElementById('go-button').innerText = "End"
+					document.getElementById('go-button').style.display = 'none' 
+				} else {
+					session.end()
+					handleSessionEnded();
+					document.getElementById('description').style.visibility = 'visible'
+					document.getElementById('description').style.display = 'block' 
+					document.getElementById('go-button').innerText = "Go"
+
+					hudNode.visible = false
+					descLayer.visible = true
+				}
+			}
+
+			function handleSessionEnded() {	
+				session = null
+			}
+
+			function handleSessionStarted(xrSession){
+				session = xrSession
+				document.body.insertBefore(xrCanvas, document.body.firstChild)
+
+				// Create the context where we will render our 3D scene
+				const canvas = document.createElement('canvas')
+				var glContext = canvas.getContext('webgl', {
+					compatibleXRDevice: device
+				})
+				if(!glContext) throw new Error('Could not create a webgl context')
+
+				// Set up the base layer
+				session.baseLayer = new XRWebGLLayer(session, glContext)
+
+				// Create a simple test scene and renderer
+				// The engine's scene is in the eye-level coordinate system 
+				engine = new XREngine(canvas, glContext, true)
+
+				createRootNode().then(() => {
+					// Kick off rendering
+					session.requestAnimationFrame(handleAnimationFrame)
+				})
+
+				initializeScene()
+			}
+
+			async function createRootNode() {
+				let headFrameOfReference = await session.requestFrameOfReference('head-model')
+				eyeLevelFrameOfReference = await session.requestFrameOfReference('eye-level')
+
+				// get the location of the device, and use it to create an 
+				// anchor with the identity orientation
+				headFrameOfReference.getTransformTo(eyeLevelFrameOfReference, workingMatrix)
+				mat4.getTranslation(workingVec3, workingMatrix)
+				mat4.fromTranslation(workingMatrix, workingVec3)
+
+				let anchor = await session.addAnchor(workingMatrix, eyeLevelFrameOfReference)
+				engine.addAnchoredNode(anchor, engine.root)
+				
+				return true
+			}
+
+			// render loop			
+			function handleAnimationFrame(t, frame){
+				if(!session || session.ended) return
+				session.requestAnimationFrame(handleAnimationFrame)
+				updateScene()
+
+				let pose = frame.getDevicePose(eyeLevelFrameOfReference)
+				if(!pose){
+					console.log('No pose')
+					return
+				}
+
+				engine.startFrame()
+				for (let view of frame.views) {
+					engine.preRender(
+						session.baseLayer.getViewport(view),
+						view.projectionMatrix,
+						pose.getViewMatrix(view)
+					)
+					updateForView()
+					engine.render()
+				}
+				engine.endFrame()
+			}
+
+		</script>
+	</body>
+</html>

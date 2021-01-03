@@ -1,0 +1,42 @@
+<html>
+	<head>
+		<title>Auground</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link rel="stylesheet" href="/common.css"/>
+		<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js" type="text/javascript"></script>
+
+
+		<link rel="stylesheet" href="/bootstrap/bootstrap.css">
+		<input type="hidden" id="userLongitude">
+		<input type="hidden" id="userLatitude">
+	</head>
+	<body>
+		<div class="jumbotron">
+			<img src="auground-logo.png" id="logo-header">
+			<h1>Auground</h1>
+			<p>Augmenting your reality.</p>
+		</div>
+
+		<div id="main">
+			<div class="card-columns">
+				<% for(var i = 0; i < allFilters.length; i++) { %>
+					<div class="card">
+					  <img class="card-img-top" src="sample-cover.jpg" alt="Card image">
+					  <div class="card-body">
+					    <h4 class="card-title"><%= allFilters[i].title %></h4>
+					    <p class="card-text"><%= allFilters[i].description %></p>
+						<p class="card-text"><%= allFilters[i].createdBy %></p>
+						<p class="card-text"><%= allFilters[i].dateC %></p>
+						<p class="card-text"><%= allFilters[i].dateU %></p>
+						<p class="card-text"><%= allFilters[i].isActive %></p>
+					    <form action="/filter" method="post" enctype="multipart/form-data" id="filterForm" class="btn btn-primary">
+							<button type="submit" id="filterButton" name="filterButton" value=<%= allFilters[i].filterID %>>Activate</button>
+						</form>
+					  </div>
+					</div>
+				<% } %>
+			</div>
+		</div>
+	</body>
+</html>
